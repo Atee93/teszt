@@ -1,0 +1,132 @@
+void traverseNode(INode node, IFolder folder1){
+
+//TOPLEVEL NODES
+    if ((node.getType() == FMNodeType.STATIC || node.getType() == FMNodeType.NODESONLY) && node.getParent() == null){
+
+       INodes folder1TopLevelNodes = folder1.getNodes2()
+       
+       boolean foundTopLevelTargetNode = false;
+       
+       for (int i = 0; i<folder1TopLevelNodes.getCount();i++){
+
+          if(folder1TopLevelNodes.getItem(i).getName() == node.getName()){
+          	foundTopLevelTargetNode = true;
+
+          	log.info("Found Top Level Target node. Name:  {} ",folder1TopLevelNodes.getItem(i).getName() )
+          	break;
+
+          	
+          	}
+       }
+
+
+       if(!foundTopLevelTargetNode){
+       	log.info("NOT FOUND Top level Target node, Creating:  {} ", node.getName())
+
+          folder1TopLevelNodes.addNew(FMNodeType.STATIC).setName(node.getName())
+          folder1.commit()
+       	
+       	}
+    }
+
+//CHILD NODES
+   if (node.getType() == FMNodeType.STATIC && node.getParent() != null){
+
+       INode parentNode = node.getParent()
+      
+       List<INode>folder1ParentNode = folder1.getNodesByName(parentNode.getName())
+
+       if (folder1ParentNode.size() == 1){
+
+       INodes folder1ParentChildNodes = (INodes)folder1ParentNode.get(0).getChildNodes()
+       
+       boolean foundTargetNode = false;
+       
+       for (int i = 0; i < folder1ParentChildNodes.getCount(); i++){
+       	
+       	if (folder1ParentChildNodes.getItem(i).getName() == node.getName()){
+           log.info("Found Target node name {}", node.getName())
+           foundTargetNode = true;
+           break;
+   		
+       	}
+       	}
+
+       if(!foundTargetNode){
+
+        folder1ParentChildNodes.addNew(FMNodeType.STATIC).setName(node.getName())
+        folder1.commit()
+       }
+
+       }
+
+
+    }
+
+
+
+if (node.getType() != FMNodeType.NODESONLY){
+
+ // Link kiszedese a nodebol
+
+IElements nodeElements = node.getElements()
+
+IDocumentHitList nodeElementsHitList = nodeElements.resolveInformationObjects(VersionIdentifier.CURRENT_VERSION, IRetentionState.ALL, false)
+
+IInformationObject[] nodeInformationobjects = nodeElementsHitList.getInformationObjects()
+
+
+// NodeID csak akkor lehet meg ha commitoltuk a folder letrehozast.
+
+
+List<INode> targetNodeToLink = folder1.getNodesByName(node.getName())
+
+IElements targetNodeElements = targetNodeToLink.get(0).getElements()
+
+IDocumentHitList targetNodeElementsHitList = targetNodeElements.resolveInformationObjects(VersionIdentifier.CURRENT_VERSION, IRetentionState.ALL, false)
+IInformationObject[] targetNodeInformationobjects = targetNodeElementsHitList.getInformationObjects()
+
+
+
+for (IInformationObject nodeInformationobject : nodeInformationobjects){
+	 
+boolean foundLinkInTargetNode = false;
+
+for (IInformationObject targetNodeInformationobject : targetNodeInformationobjects){
+	
+	
+	if (nodeInformationobject.getId() == targetNodeInformationobject.getId()){
+
+          log.info("az alabbi docnev jelen van {} , Ebben a targetnodeba: {}", targetNodeInformationobject, targetNodeToLink.get(0))
+		foundLinkInTargetNode = true
+		break;
+		
+		}
+
+}
+
+
+if (!foundLinkInTargetNode){
+ILink addNewLink = ds.createLink (s, folder1.getId() , targetNodeToLink.get(0), nodeInformationobject.getId())
+
+addNewLink.commit()
+	
+}
+}
+}
+
+    INodes childnodes = (INodes)node.getChildNodes()
+    
+    for (int i = 0; i < childnodes.getCount();i++){
+
+           
+          if (childnodes.getItem(i).getType() == FMNodeType.STATIC){
+
+               log.info("traverse on {}", childnodes.getItem(i).getName())
+          	traverseNode(childnodes.getItem(i), folder1)        	
+
+          } 
+   }
+
+  
+}
