@@ -1,0 +1,503 @@
+import com.ser.blueline.*
+
+import de.ser.doxis4.agentserver.AgentExecutionResult
+import de.ser.doxis4.agentserver.AgentServerReturnCodes
+
+import org.apache.logging.log4j.LogManager
+import org.apache.logging.log4j.Logger
+
+import groovy.transform.Field
+
+import com.ser.blueline.metaDataComponents.IArchiveClass;
+import com.ser.blueline.IQueryParameter;
+import com.ser.blueline.IDocumentHitList;
+import com.ser.blueline.resultset.IResultSet;
+
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
+
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+import com.ser.blueline.agents.IAgentExecutionObject;
+import com.ser.blueline.agents.IAgentExecutionResult;
+
+import com.ser.foldermanager.*
+
+import com.ser.foldermanager.IFolder
+
+import java.util.stream.Collectors;
+
+
+
+@Field Logger log = LogManager.getLogger("agent.DeduplicateE-files-ISU-Vertragskontoakte_ver1")
+@Field ISession s = doxis4Session
+@Field IDocumentServer ds = documentServer
+
+try {
+ log.info("------------------------------ Agent job Started ------------------------------")
+
+ IQueryOptions options = ds.getClassFactory().createQueryOptions(s, null, null, VersionIdentifier.CURRENT_VERSION, false)
+
+ //!!!!!!!!! CLASS ID TYPE
+ IResultSet duplicatedFolders = ds.searchAttributes(s, "SELECT VERTRKONT_NUM FROM AKTEN WHERE VERTRKONT_NUM IS NOT NULL AND VERTRKONT_NUM = '95650384-teszt' AND TYPE='e09be6ea-c7a7-4724-8e2f-53efca4cf3a4' GROUP BY VERTRKONT_NUM HAVING COUNT(*) > 1", options);
+
+
+ log.info("Rowcount : {}",duplicatedFolders.getRowCount())
+
+ 
+ for (int row = 0; row < duplicatedFolders.getRowCount(); row++) {
+ 	
+  List<IValue> values = duplicatedFolders.getValues(row,0)
+  String value = values[0].getStringRepresentation()
+
+  // TYPE CLASSID  ATIRNI !!!!!!!!!!!!!!!!!!!!
+  List<IFolder> duplicatedFolderObjects = myqueryFolders("TYPE='e09be6ea-c7a7-4724-8e2f-53efca4cf3a4' AND CLEANUP IS NULL AND VERTRKONT_NUM='${value}'","AKTEN")
+
+  // CLEANUPDESCID ATIRNI !!!!!!!!!!!!!!!!!!!!!
+  String cleanupDescID = "599f2578-165b-4cf1-9394-dc0d92bdf6fd"
+  String[] cleanupDescValue_Success = ["Success"]
+  String[] cleanupDescValue_Failed_Ref_mismatch = ["Failed: Referencing Object Mismatch"]
+  String[] cleanupDescValue_Failed_More_Than_one_Ref = ["Failed: There is more than one Referencing Objects found"]
+  String[] cleanupDescValue_Failed_Descriptor_inconsistency = ["Failed: Descriptor Inconsistency"]
+  
+  String mainFolderObjectIndex = ""
+  String referencingInfoObjectID = ""
+  int i = 0
+  for(IFolder duplicatedFolderObject : duplicatedFolderObjects){ 
+   	
+   IInformationObject[] duplicatedFolderObjectReferencingInfoObjects = ds.getReferencingInformationObjects(s, (IInformationObject)duplicatedFolderObject, true, VersionIdentifier.CURRENT_VERSION, IRetentionState.ALL, false, s.getDatabaseByName("E1"),s.getDatabaseByName("E2"), s.getDatabaseByName("E3"))
+   log.info("REF OBJEKT SZAMA: {}",duplicatedFolderObjectReferencingInfoObjects.length)
+
+
+   if (duplicatedFolderObjectReferencingInfoObjects.length == 1){
+   	log.info("VAN 1 REF OBJECT")
+    if (referencingInfoObjectID.equals("")){
+     referencingInfoObjectID = duplicatedFolderObjectReferencingInfoObjects[0].getId()
+    }
+    
+    if (mainFolderObjectIndex.equals("")){
+     mainFolderObjectIndex = String.valueOf(i)
+    }
+    
+    if (referencingInfoObjectID != duplicatedFolderObjectReferencingInfoObjects[0].getId()){
+    	log.error("A duplikalt akta referencingOjectje nem egyezik. AKTA ID: {}, COMMON ATTRIBUTE: {}", duplicatedFolderObject.getId(), value )
+    	mysetDescriptorValueS(duplicatedFolderObject, cleanupDescID, cleanupDescValue_Failed_Ref_mismatch)
+    	duplicatedFolderObject.commit()
+    	mainFolderObjectIndex = "" 
+    	referencingInfoObjectID = ""
+    	break;
+    }
+   }
+
+   if (duplicatedFolderObjectReferencingInfoObjects.length > 1){
+    log.error("Tobb mint 1 referencingObjectje van az adott aktanak ID: {} COMMON ATTRIBUTE: {}", duplicatedFolderObject, value)
+    mysetDescriptorValueS(duplicatedFolderObject, cleanupDescID, cleanupDescValue_Failed_More_Than_one_Ref)
+    duplicatedFolderObject.commit()
+    mainFolderObjectIndex= "" 
+    referencingInfoObjectID = "" 
+    break; 
+   }
+   i++
+
+   if (i == duplicatedFolderObjects.size() &&  mainFolderObjectIndex.equals("")){
+    	mainFolderObjectIndex = String.valueOf(0)
+   }
+ }
+
+
+if (!mainFolderObjectIndex.equals("")){
+
+log.info("MAIN FOLDER OBJECT ID: {}", duplicatedFolderObjects.get(Integer.valueOf(mainFolderObjectIndex)).getId())
+IFolder mainFolderObject = duplicatedFolderObjects.get(Integer.valueOf(mainFolderObjectIndex))
+
+int j = 0
+
+duplicatedfoldercheck: for(IFolder duplicatedFolderObject : duplicatedFolderObjects){ 
+
+if (j != Integer.valueOf(mainFolderObjectIndex)){
+	
+
+IFolderDescriptors duplicatedFolderObjectDescriptors = duplicatedFolderObject.getDescriptors()
+
+// Deszkriptor osszehasonlitas
+for (int d = 0 ; d < duplicatedFolderObjectDescriptors.getCount();d++){
+
+	IFolderDescriptor desc = duplicatedFolderObjectDescriptors.getItem(d)
+
+     //log.info("DESC ID FOR DUP = {}, COUNT: {} ", desc.getID(), duplicatedFolderObjectDescriptors.getCount())
+	
+	String[] descValues = desc.getValues()
+	String descID = desc.getID()
+
+
+     if(descID == cleanupDescID){
+     	//log.info("CLEANUPDESCMODOSULNA")
+     	continue;
+     	
+     }
+
+	if (mainFolderObject.getDescriptors().getItemByID(descID) != null && desc != null && mainFolderObject.getDescriptors().getItemByID(descID).getValues() != descValues){
+
+	 //Jelenlegi vizsgalt folder objektre ratesszuk a hibat.
+	 mysetDescriptorValueS(duplicatedFolderObject, cleanupDescID, cleanupDescValue_Failed_Descriptor_inconsistency)
+	 
+	 ///!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+	 duplicatedFolderObject.commit()
+	 log.info("Deszkriptorok nem egyeznek. Desc ID: {}, Common Attribute: {}", descID, value)
+	 break duplicatedfoldercheck;
+	}
+
+	if (mainFolderObject.getDescriptors().getItemByID(descID) == null && descValues != null){
+		mysetDescriptorValueS(mainFolderObject,descID,descValues)
+		log.info("Beallitva: AKTA ID: {}, DESC ID :{}, VALUE :{}",mainFolderObject.getId(), descID, descValues)
+
+	}
+	
+}
+
+}
+
+j++
+
+}
+
+
+
+if (j == duplicatedFolderObjects.size()){
+
+
+
+for(IFolder duplicatedFolderObject : duplicatedFolderObjects){
+	
+
+	INodes duplicatedFolderObjectNodes = duplicatedFolderObject.getNodes2()
+
+	for (int k = 0; k < duplicatedFolderObjectNodes.getCount(); k++){
+		
+
+		INode duplicatedFolderObjectNode = duplicatedFolderObjectNodes.getItem(k)
+		
+		traverseNode(duplicatedFolderObjectNode, duplicatedFolderObjects.get(Integer.valueOf(mainFolderObjectIndex)))
+		
+		
+		}
+	
+	}
+	
+mysetDescriptorValueS(mainFolderObject,cleanupDescID,cleanupDescValue_Success)
+		
+//!!!!!!!!!!!
+mainFolderObject.commit()
+log.info("Main desc save")
+
+}
+
+
+}
+
+ 
+}
+
+
+
+ log.info("---------------------------- Agent job Ended Successfully ----------------------------")
+ 
+ return new AgentExecutionResult(AgentServerReturnCodes.RETURN_CODE_SUCCESS, null, false, null)
+    
+} catch (Exception e) {
+ log.error("Error: " + e.getMessage())  
+ log.error("---------------------------- Agent job Ended with Error----------------------------")
+ return new AgentExecutionResult(AgentServerReturnCodes.RETURN_CODE_ERROR, "Error: " + e.getMessage(), false, null)
+}
+
+
+
+public List<IDocument> myqueryDocuments(String whereClause, List<String> databaseNames, boolean currentVersionOnly) throws BlueLineException {
+ IQueryParameter qParam = null
+ try {
+ qParam = ds.getClassFactory().getQueryParameterInstance(
+ s,
+ databaseNames.toArray(new String[0]),
+ ds.getClassFactory().getExpressionInstance(whereClause),
+ null,
+ null
+ )
+
+ qParam.setCurrentVersionOnly(currentVersionOnly);
+            
+ IDocumentHitList hitList = ds.query(qParam, s);
+ IDocument[] docs = hitList.getDocumentObjects();
+            
+ if (docs.length == 0) {
+  return Collections.emptyList();
+ } else {
+  return Arrays.asList(docs);
+ }
+
+}
+
+ 
+ catch (Exception e){
+  log.error("Error: {}", e.getMessage())
+ }
+ finally {
+  if (qParam != null){
+   qParam.close()
+  }
+ }
+}
+        
+        
+        
+        
+void traverseNode(INode node, IFolder folder1){
+
+//TOPLEVEL NODES
+    if ((node.getType() == FMNodeType.STATIC || node.getType() == FMNodeType.NODESONLY) && node.getParent() == null){
+
+       INodes folder1TopLevelNodes = folder1.getNodes2()
+       
+       boolean foundTopLevelTargetNode = false;
+       
+       for (int i = 0; i<folder1TopLevelNodes.getCount();i++){
+
+          if(folder1TopLevelNodes.getItem(i).getName() == node.getName()){
+          	foundTopLevelTargetNode = true;
+
+          	log.info("Found Top Level Target node. Name:  {} ",folder1TopLevelNodes.getItem(i).getName() )
+          	break;
+
+          	
+          	}
+       }
+
+
+       if(!foundTopLevelTargetNode){
+       	log.info("NOT FOUND Top level Target node, Creating:  {} ", node.getName())
+
+          folder1TopLevelNodes.addNew(FMNodeType.STATIC).setName(node.getName())
+          //!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+          folder1.commit()
+       	
+       	}
+    }
+
+
+
+//CHILD NODES
+   if (node.getType() == FMNodeType.STATIC && node.getParent() != null){
+
+       INode parentNode = node.getParent()
+      
+       List<INode>folder1ParentNode = folder1.getNodesByName(parentNode.getName())
+
+       if (folder1ParentNode.size() == 1){
+
+       INodes folder1ParentChildNodes = (INodes)folder1ParentNode.get(0).getChildNodes()
+       
+       boolean foundTargetNode = false;
+       
+       for (int i = 0; i < folder1ParentChildNodes.getCount(); i++){
+       	
+       	if (folder1ParentChildNodes.getItem(i).getName() == node.getName()){
+           log.info("Found Target node name {}", node.getName())
+           foundTargetNode = true;
+           break;
+   		
+       	}
+       	}
+
+       if(!foundTargetNode){
+
+        folder1ParentChildNodes.addNew(FMNodeType.STATIC).setName(node.getName())
+        
+        //!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+        folder1.commit()
+       }
+
+       }
+
+    }
+
+
+if (node.getType() == FMNodeType.STATIC){
+
+ // Link kiszedese a nodebol
+
+IElements nodeElements = node.getElements()
+
+IDocumentHitList nodeElementsHitList = nodeElements.resolveInformationObjects(VersionIdentifier.CURRENT_VERSION, IRetentionState.ALL, false)
+
+IInformationObject[] nodeInformationobjects = nodeElementsHitList.getInformationObjects()
+
+
+// NodeID csak akkor lehet meg ha commitoltuk a node letrehozast.
+
+List<INode> targetNodeToLink = folder1.getNodesByName(node.getName())
+
+IElements targetNodeElements = targetNodeToLink.get(0).getElements()
+
+IDocumentHitList targetNodeElementsHitList = targetNodeElements.resolveInformationObjects(VersionIdentifier.CURRENT_VERSION, IRetentionState.ALL, false)
+IInformationObject[] targetNodeInformationobjects = targetNodeElementsHitList.getInformationObjects()
+
+
+
+for (IInformationObject nodeInformationobject : nodeInformationobjects){
+	 
+boolean foundLinkInTargetNode = false;
+
+for (IInformationObject targetNodeInformationobject : targetNodeInformationobjects){
+	
+	
+	if (nodeInformationobject.getId() == targetNodeInformationobject.getId()){
+
+          log.info("Az alabbi doc jelen van {} , Ebben a targetnodeban -> {}", targetNodeInformationobject, targetNodeToLink.get(0))
+		foundLinkInTargetNode = true
+		break;
+		
+		}
+
+}
+
+
+if (!foundLinkInTargetNode){
+ILink addNewLink = ds.createLink (s, folder1.getId() , targetNodeToLink.get(0), nodeInformationobject.getId())
+//!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+addNewLink.commit()
+	
+}
+}
+}
+
+    INodes childnodes = (INodes)node.getChildNodes()
+    
+    for (int i = 0; i < childnodes.getCount();i++){
+
+           
+          if (childnodes.getItem(i).getType() == FMNodeType.STATIC){
+
+               log.info("traverse on {}", childnodes.getItem(i).getName())
+          	traverseNode(childnodes.getItem(i), folder1)        	
+
+          } 
+   }
+
+  
+}
+
+
+
+
+
+        
+        
+    
+/*
+
+public List<IDocument> myqueryDocuments(String whereClause) throws BlueLineException {
+ Pattern p = Pattern.compile("TYPE='([a-f0-9-]{36})'");
+ Matcher m = p.matcher(whereClause);
+        
+ List<String> databaseNames = new ArrayList<>();
+ while (m.find()) {
+  IArchiveClass archClass = ds.getArchiveClass(m.group(1), s);         
+  if (archClass == null) {
+   log.error("Invalid Doc Class ID given :{}", archClass);
+   continue;
+  }
+            
+  for (String dbId : archClass.getAssignedDatabaseIDs()) {
+   IContentRepository contentRepo = ds.getMetaDataConnector(s).getContentRepository(dbId);
+   databaseNames.add(contentRepo.getShortName());
+  }
+ }
+ IQueryParameter qParam = null
+
+ try {
+  qParam = ds.getClassFactory().getQueryParameterInstance(
+  s,
+  databaseNames.toArray(new String[0]),
+  ds.getClassFactory().getExpressionInstance(whereClause),
+  null,
+  null
+  )
+
+  qParam.setCurrentVersionOnly(true);
+            
+  IDocumentHitList hitList = ds.query(qParam, s);
+  IDocument[] docs = hitList.getDocumentObjects();
+            
+  if (docs.length == 0) {
+   return Collections.emptyList();
+  } else {
+   return Arrays.asList(docs);
+  }
+ }
+ catch (Exception e){
+  log.error("Error: {}", e.getMessage())
+  }
+ finally {
+  if (qParam != null){
+   qParam.close()
+  }
+ }
+}
+
+*/
+
+
+
+
+
+
+public List<IFolder> myqueryFolders(String whereClause, String databaseName) throws BlueLineException{
+	
+ IQueryParameter qParam = null
+
+ try {
+  qParam = ds.getClassFactory().getQueryParameterInstance(
+  s,
+  new String[] { databaseName },
+  ds.getClassFactory().getExpressionInstance(whereClause),
+  null,
+  null
+  )
+        
+IDocumentHitList hitList = ds.query(qParam, s);
+long hitlistcount = hitList.getTotalHitCount()
+IInformationObject[] ios = hitList.getInformationObjects();
+
+
+   if (ios.length == 0) {
+    return Collections.emptyList();
+   } else {
+    //return ios.findAll { it instanceof IFolder }.collect { it as IFolder }
+    
+    ios.findAll { it instanceof IFolder } as List<IFolder>
+   }
+ }
+
+ catch (Exception e){
+  log.error("Error: {}", e.getMessage())
+  }
+ finally {
+  if (qParam != null){
+   qParam.close()
+  }
+ }
+}
+
+
+void mysetDescriptorValueS(IInformationObject infoObj, String descIdentifier, String[] vals) {
+
+    IDescriptor desc = ds.getDescriptor(descIdentifier,s)
+
+    IValueDescriptor valDesc = ds.getClassFactory().getValueDescriptorInstance(desc);
+
+    for(String val : vals) {
+    	valDesc.addValue(val);
+    }
+    infoObj.addDescriptor(valDesc); 
+}
+
